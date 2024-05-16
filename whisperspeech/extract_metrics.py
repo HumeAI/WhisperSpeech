@@ -9,6 +9,7 @@ import os
 from os.path import expanduser
 import itertools
 from pathlib import Path
+import traceback
 
 import numpy as np
 import torch
@@ -31,6 +32,7 @@ from .inference import get_compute_device
 def prepare_metrics(
     input:str,  # audio file webdataset file path
     output:str, # output shard path
+    kind:str = 'max', # mvad kind
     n_samples:int=None, # process a limited amount of samples
     
 ):
@@ -45,10 +47,10 @@ def prepare_metrics(
         import math, time
         start = time.time()
         ds = wds.WebDataset([utils.derived_name(input, 'mvad')]).decode()
-        total = math.ceil(sum([len(x[f'max.spk_emb.npy']) for x in ds]))
+        total = math.ceil(sum([len(x[f'{kind}.spk_emb.npy']) for x in ds]))
         print(f"Counting {total} batches: {time.time()-start:.2f}")
     
-    ds = vad_merge.chunked_audio_dataset([input], 'max').compose(
+    ds = vad_merge.chunked_audio_dataset([input], kind).compose(
         wds.to_tuple('__key__', 'rpad', 'gain_shift.npy', 'samples', 'sample_rate'),
     )
 
@@ -62,9 +64,13 @@ def prepare_metrics(
                 snd = (snd - gain_shift[1]) * gain_shift[0]
                 snd = snd.unsqueeze(0).to(device)
 
-                res = snr_pipeline({
-                    "sample_rate": sr, "waveform": snd
-                })
+                try:
+                    res = snr_pipeline({
+                        "sample_rate": sr, "waveform": snd
+                    })
+                except:
+                    traceback.print_exc()
+                    res = dict(snr = np.array([np.nan]), c50 = np.array([np.nan]))
 
             s = {
                 "__key__": keys,
