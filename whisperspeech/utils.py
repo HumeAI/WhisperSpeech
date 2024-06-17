@@ -283,13 +283,13 @@ def find_audio(stream, okey='audio', ikeys='flac;mp3;sox;wav;m4a;ogg;wma;opus'):
                 break
             # implicitly skips elements without any audio
 
-# %% ../nbs/D. Common dataset utilities.ipynb 18
-def vad_dataset(shards, ikey='vad.npy', kind='vad'):
+# %% ../nbs/D. Common dataset utilities.ipynb 28
+def vad_dataset(shards, ikey='vad.npy', kind='vad', pad_to_seconds=30):
     return wds.WebDataset(shards).compose(
         wds.decode(torch_audio_opus),
         find_audio,
         merge_in(derived_dataset(kind)),
-        lambda x: split_to_chunks(x, ikey=ikey),
+        lambda x: split_to_chunks(x, ikey=ikey, pad_to_seconds=pad_to_seconds),
     )
 
 # %% ../nbs/D. Common dataset utilities.ipynb 19
