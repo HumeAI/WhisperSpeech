@@ -35,6 +35,21 @@ huggingface_hub.hf_hub_download = wrap_downloader(huggingface_hub.hf_hub_downloa
 import numpy
 numpy.int = int
 
+# %% ../nbs/D. Common dataset utilities.ipynb 5
+# remove wds dependecy on the `file` command line tool,
+# based a bit on https://github.com/h2non/filetype.py/blob/master/filetype/types/archive.py
+def get_filetype(fname_or_file):
+    if isinstance(fname_or_file, (str, Path)):
+        with open(fname_or_file, 'rb') as f: return get_filetype(f)
+    f = fname_or_file
+    header = f.read(262)
+    if header[257:] == b'ustar':
+        return 'tar archive'
+    elif header[:3] == b'\x1f\x8b\x08':
+        return 'gzip compressed'
+    return 'unknown file format'
+wds.cache.get_filetype = get_filetype
+
 # %% ../nbs/D. Common dataset utilities.ipynb 10
 def shard_glob(input):
     if isinstance(input, Path):
