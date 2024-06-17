@@ -21,7 +21,7 @@ from pathlib import Path
 
 # %% ../nbs/5B. Multi-lang text to semantic token modeling.ipynb 2
 from whisperspeech.modules import *
-from whisperspeech import languages, inference
+from whisperspeech import languages, inference, up_initialization
 
 # %% ../nbs/5B. Multi-lang text to semantic token modeling.ipynb 6
 import re
@@ -280,31 +280,7 @@ class TSARTransformer(nn.Module):
         pass
 
     def init_transformer(self, m):
-        if isinstance(m, LinearHead):
-            m.no_weight_decay = True
-            torch.nn.init.constant_(m.weight, 0)
-        elif isinstance(m, QueryHead):
-            m.lr_scale = 1/(m.weight.shape[1] / self.base_width)
-            torch.nn.init.constant_(m.weight, 0)
-        elif isinstance(m, nn.Embedding):
-            m.no_weight_decay = True
-            m.lr_scale = self.tunables.embeddings_lr_scale
-            std = self.tunables.embeddings_std
-            torch.nn.init.trunc_normal_(m.weight, std=std, a=-3*std, b=3*std)
-        elif isinstance(m, EmbeddingProjector):
-            m.lr_scale = self.tunables.embedding_projector_lr_scale
-            std = self.tunables.init_std
-            torch.nn.init.trunc_normal_(m.weight, std=std, a=-3*std, b=3*std)
-        elif isinstance(m, nn.Linear):
-            m.lr_scale = 1/(m.weight.shape[1] / self.base_width)
-            std = self.tunables.init_std / m.weight.shape[1]
-            torch.nn.init.trunc_normal_(m.weight, std=std, a=-3*std, b=3*std)
-            if m.bias is not None:
-                torch.nn.init.trunc_normal_(m.bias, std=std, a=-3*std, b=3*std)
-        elif isinstance(m, nn.LayerNorm):
-            m.no_weight_decay = True
-            torch.nn.init.constant_(m.bias, 0)
-            torch.nn.init.constant_(m.weight, 1)
+        up_initialization.init_transformer(self, m)
     
     def _embed_cps(self, cpss):
         if self.cps_embeddings is None: return None

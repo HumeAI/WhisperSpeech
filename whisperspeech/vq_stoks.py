@@ -30,7 +30,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data.dataloader import DataLoader
 import webdataset as wds
-from . import utils, vad_merge
+from . import utils, up_initialization, vad_merge
 
 from vector_quantize_pytorch import ResidualVQ
 
@@ -256,27 +256,7 @@ class RQBottleneckTransformer(nn.Module):
         self.ensure_whisper(device)
     
     def init_transformer(self, m):
-        if isinstance(m, LinearHead):
-            m.no_weight_decay = True
-            torch.nn.init.constant_(m.weight, 0)
-        elif isinstance(m, QueryHead):
-            m.lr_scale = 1/(m.weight.shape[1] / self.base_width)
-            torch.nn.init.constant_(m.weight, 0)
-        elif isinstance(m, nn.Embedding):
-            m.no_weight_decay = True
-            m.lr_scale = self.tunables.embeddings_lr_scale
-            std = self.tunables.embeddings_std
-            torch.nn.init.trunc_normal_(m.weight, std=std, a=-3*std, b=3*std)
-        elif isinstance(m, nn.Linear):
-            m.lr_scale = 1/(m.weight.shape[1] / self.base_width)
-            std = self.tunables.init_std / m.weight.shape[1]
-            torch.nn.init.trunc_normal_(m.weight, std=std, a=-3*std, b=3*std)
-            if m.bias is not None:
-                torch.nn.init.trunc_normal_(m.bias, std=std, a=-3*std, b=3*std)
-        elif isinstance(m, nn.LayerNorm):
-            m.no_weight_decay = True
-            torch.nn.init.constant_(m.bias, 0)
-            torch.nn.init.constant_(m.weight, 1)
+        up_initialization.init_transformer(self, m)
 
     @property
     def device(self):

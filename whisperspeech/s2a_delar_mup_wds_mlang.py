@@ -25,7 +25,7 @@ import json
 from fastprogress import progress_bar, master_bar
 
 # %% ../nbs/4B. Multi-language semantic to acoustic token modeling.ipynb 4
-from . import inference
+from . import inference, up_initialization
 from .modules import *
 
 # %% ../nbs/4B. Multi-language semantic to acoustic token modeling.ipynb 8
@@ -303,27 +303,7 @@ class SADelARTransformer(nn.Module):
             self.decoder.embeddings[i].set_frozen_embeddings(amodel.quantizer.vq.layers[i].codebook)
             
     def init_transformer(self, m):
-        if isinstance(m, LinearHead):
-            m.no_weight_decay = True
-            torch.nn.init.constant_(m.weight, 0)
-        elif isinstance(m, QueryHead):
-            m.lr_scale = 1/(m.weight.shape[1] / self.base_width)
-            torch.nn.init.constant_(m.weight, 0)
-        elif isinstance(m, nn.Embedding):
-            m.no_weight_decay = True
-            m.lr_scale = self.tunables.embeddings_lr_scale
-            std = self.tunables.embeddings_std
-            torch.nn.init.trunc_normal_(m.weight, std=std, a=-3*std, b=3*std)
-        elif isinstance(m, nn.Linear):
-            m.lr_scale = 1/(m.weight.shape[1] / self.base_width)
-            std = self.tunables.init_std / m.weight.shape[1]
-            torch.nn.init.trunc_normal_(m.weight, std=std, a=-3*std, b=3*std)
-            if m.bias is not None:
-                torch.nn.init.trunc_normal_(m.bias, std=std, a=-3*std, b=3*std)
-        elif isinstance(m, nn.LayerNorm):
-            m.no_weight_decay = True
-            torch.nn.init.constant_(m.bias, 0)
-            torch.nn.init.constant_(m.weight, 1)
+        up_initialization.init_transformer(self, m)
 
     def embed_stoks(self, Stoks):
         b,n = Stoks.shape
