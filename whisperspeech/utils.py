@@ -5,6 +5,7 @@ __all__ = ['shard_glob', 'join_datasets', 'resampler', 'derived_name', 'derived_
            'readlines']
 
 # %% ../nbs/D. Common dataset utilities.ipynb 1
+import itertools
 import os
 import torch
 import torchaudio
@@ -102,22 +103,30 @@ def resampler(newsr = 24000, key = 'samples_24k'):
     
     return _resample
 
-# %% ../nbs/D. Common dataset utilities.ipynb 11
+# %% ../nbs/D. Common dataset utilities.ipynb 18
 def derived_name(url, kind, suffix=None):
     if suffix is None: suffix = '' if url.endswith('.gz') else ".gz"
-    url = Path(url)
-    return str(url.parent.parent/kind/url.name) + suffix
+    parts = url.split('/')
+    parts[-2] = kind
+    return '/'.join(parts) + suffix
 
-# %% ../nbs/D. Common dataset utilities.ipynb 12
+# %% ../nbs/D. Common dataset utilities.ipynb 22
 def derived_dataset(kind, suffix=None, decoders=[]):
     def deriver(url):
-        return wds.WebDataset(
-            wds.SimpleShardList([derived_name(url, kind, suffix)])
-        ).decode(*decoders)
+        new = derived_name(url, kind, suffix)
+        try:
+            return wds.WebDataset(
+                wds.SimpleShardList([new])
+            ).decode(*decoders)
+        except (IOError, FileNotFoundError):
+            def _iter():
+                while True:
+                    yield { '__skip_sample__': True }
+            return _iter
     return deriver
 
-# %% ../nbs/D. Common dataset utilities.ipynb 13
-def merge_in(dataset_fun):
+# %% ../nbs/D. Common dataset utilities.ipynb 23
+def merge_in(dataset_fun, missing_ok=False):
     """Merge a dataset into the current one returning samples with the union of keys. Pass in a function
     that takes a URL of a sample and returns a dataset for it (called everytime the URL changes).
     
@@ -140,13 +149,21 @@ def merge_in(dataset_fun):
             if '__skip_merge__' not in s:
                 try:
                     merge_s = next(merged_samples)
+                except (IOError, FileNotFoundError):
+                    if not missing_ok: raise
+                    merged_samples = itertools.repeat({ '__skip_sample__': True })
+                    merge_s = next(merged_samples)
                 except StopIteration:
                     # if the original shard got repeated we won't observe a __url__ change
                     # in this case restart the dataset from the beginning
                     merged_samples = iter(dataset_fun(url))
                     merge_s = next(merged_samples)
-                assert merge_s['__key__'] == s['__key__'], f"sample keys don't match: {merge_s['__key__']}, {s['__key__']} in file {s['__url__']}"
-                news.update(merge_s)
+                if '__skip_sample__' not in merge_s:
+                    assert merge_s['__key__'] == s['__key__'], f"""sample keys don't match:
+    {s['__key__']} from {s['__url__']}"
+and
+    {merge_s['__key__']} from {merge_s['__url__']}"""
+                    news.update(merge_s)
             yield news
     return merge_loop
 
