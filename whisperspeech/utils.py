@@ -179,7 +179,7 @@ def split_to_chunks(stream, ikey='vad.npy', copy_keys=[], split_keys=[], pad_to_
                 continue
             samples = audio[0,int(ts*sr):int(te*sr)]
             if pad_to_seconds is not None:
-                padding = pad_to_seconds*sr-samples.shape[-1]
+                padding = int(pad_to_seconds*sr-samples.shape[-1])
                 lpad = random.randint(0, padding) if random_shift else 0
                 samples = F.pad(samples, (lpad, padding-lpad))
             subs = {"__key__": s['__key__'] + f"_{i:03d}",
