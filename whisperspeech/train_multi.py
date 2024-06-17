@@ -128,6 +128,17 @@ class TrainingTask(pl.LightningModule):
             lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
                 optimizer, schedulers=[warmup_scheduler, train_scheduler], milestones=[warmup_steps]
             )
+        elif self.model_hparams['lr_schedule'] == 'wsd-lin':
+            warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+                optimizer, 1e-3, 1, warmup_steps
+            )
+            # during main training part LR stays constant
+            decay_scheduler = torch.optim.lr_scheduler.LinearLR(
+                optimizer, 1, 1/8, int(0.1*total_steps)
+            )
+            lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
+                optimizer, schedulers=[warmup_scheduler, decay_scheduler], milestones=[int(total_steps - 0.1*total_steps)]
+            )
         else:
             raise Exception("Unknown learning rate schedule")
 
