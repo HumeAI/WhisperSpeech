@@ -13,6 +13,8 @@ import torch.nn.functional as F
 from pathlib import Path
 from contextlib import contextmanager
 import webdataset as wds
+from urllib.parse import urlparse
+import subprocess
 
 # %% ../nbs/D. Common dataset utilities.ipynb 2
 import huggingface_hub
@@ -295,12 +297,20 @@ def vad_dataset(shards, ikey='vad.npy', kind='vad', pad_to_seconds=30):
 # %% ../nbs/D. Common dataset utilities.ipynb 19
 @contextmanager
 def AtomicTarWriter(name, throwaway=False):
-    Path(name).parent.mkdir(exist_ok=True, parents=True)
-    tmp = name+".tmp"
-    with wds.TarWriter(tmp, compress=name.endswith('gz')) as sink:
-        yield sink
-    if not throwaway:
-        os.rename(tmp, name)
+    pr = urlparse(name)
+    if pr.scheme == "":
+        Path(name).parent.mkdir(exist_ok=True, parents=True)
+        tmp = name+".tmp"
+        with wds.TarWriter(tmp, compress=name.endswith('gz')) as sink:
+            yield sink
+        if not throwaway:
+            os.rename(tmp, name)
+    else:
+        # webdataset writing is unfortunately not atomic with cloud buckets
+        with wds.TarWriter(name+".tmp") as sink:
+            yield sink
+        if not throwaway:
+            subprocess.run(['gsutil', 'mv', name+".tmp", name], check=True)
 
 # %% ../nbs/D. Common dataset utilities.ipynb 20
 def readlines(fname):
