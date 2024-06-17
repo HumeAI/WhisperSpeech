@@ -314,5 +314,7 @@ def AtomicTarWriter(name, throwaway=False):
 
 # %% ../nbs/D. Common dataset utilities.ipynb 20
 def readlines(fname):
-    with open(fname) as file:
-        return [line.rstrip() for line in file]
+    with wds.gopen(str(fname)) as file:
+        lines = [line.decode('utf-8').rstrip() for line in file.read().split(b'\n')]
+        if lines[-1] == "": lines.pop()
+        return lines
