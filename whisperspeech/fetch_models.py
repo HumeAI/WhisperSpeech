@@ -10,6 +10,7 @@ from fastcore.script import call_parse
 import whisperx
 import whisper
 from speechbrain.pretrained import EncoderClassifier
+from speechbrain.pretrained.interfaces import foreign_class
 from os.path import expanduser
 import urllib.request
 
@@ -37,3 +38,7 @@ def main():
                                    savedir=expanduser("~/.cache/speechbrain/"))
     urllib.request.urlretrieve('https://github.com/marianne-m/brouhaha-vad/raw/main/models/best/checkpoints/best.ckpt',
                                expanduser('~/.cache/brouhaha.ckpt'))
+    foreign_class(source="Jzuluaga/accent-id-commonaccent_xlsr-en-english",
+                  pymodule_file="custom_interface.py",
+                  classname="CustomEncoderWav2vec2Classifier",
+                  savedir=expanduser("~/.cache/Jzuluaga/accent/"))
