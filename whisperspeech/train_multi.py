@@ -228,6 +228,7 @@ parser.add_argument('--load-from', type=Path, default=None, help='initialize the
 parser.add_argument('--strategy', type=str, default='ddp', help='distributed training strategy')
 parser.add_argument('--wandb-suffix', type=str, default=None, help='W&B project name suffix')
 parser.add_argument('--wandb-task-name', type=str, default=None, help='Task name for the W&B project name')
+parser.add_argument('--manual-dataset-weights', type=bool, default=False, help='Do not calculate dataset weights using log2 of dataset size')
 
 args = parser.parse_args().__dict__
 
@@ -255,6 +256,7 @@ hyp_params['lr0'] = args['lr0']
 hyp_params['lr_schedule'] = args['lr_schedule']
 hyp_params['iterations'] = iterations
 hyp_params['strategy'] = args['strategy']
+hyp_params['manual_dataset_weights'] = args['manual_dataset_weights']
 if 'SLURM_NTASKS' in os.environ:
     hyp_params['world_size'] = os.environ['SLURM_NTASKS']
 elif 'WORLD_SIZE' in os.environ:
@@ -321,12 +323,16 @@ train_dss = [parse_and_call(f'train_ds_{i}', task.load_dataset,
              for i,train_ds_config in enumerate(args['training_data'])]
 train_dss_names = simplify_folder_names([parse_dataset_string(train_ds_config)[0] for train_ds_config in args['training_data']])
 print('train names:', train_dss_names)
-counts = [x.total_samples for x in train_dss]
-print(counts)
-print(torch.tensor(counts).log2())
-train_weights = torch.tensor(counts).log2() - torch.tensor(counts).log2().min() + 1
-for tds, w in zip(train_dss, train_weights):
-    tds.weight = w
+if not hyp_params['manual_dataset_weights']:
+    counts = [x.total_samples for x in train_dss]
+    print(counts)
+    print(torch.tensor(counts).log2())
+    train_weights = torch.tensor(counts).log2() - torch.tensor(counts).log2().min() + 1
+    for tds, w in zip(train_dss, train_weights):
+        tds.weight = w
+    print(torch.tensor(counts).log2() - torch.tensor(counts).log2().min() + 1)
+else:
+    train_weights = torch.tensor([getattr(ds, 'weight', 1) for ds in train_dss])
 
 train_total_batches = hyp_params['iterations']
 if train_total_batches < hyp_params['validate_every_n_steps']:
