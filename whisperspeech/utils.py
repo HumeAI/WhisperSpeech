@@ -201,54 +201,59 @@ def split_to_chunks(stream, ikey='vad.npy', copy_keys=[], split_keys=[], pad_to_
 import re
 import tempfile
 
-# %% ../nbs/D. Common dataset utilities.ipynb 16
-# a patch to ignore invalid utf-8 metadata
-import torio.io._streaming_media_decoder
-def new_parse_si(i):
-    media_type = i.media_type
-    try:
-        metadata = i.metadata
-    except UnicodeDecodeError:
-        metadata = {}
-    if media_type == "audio":
-        return torio.io._streaming_media_decoder.SourceAudioStream(
+# %% ../nbs/D. Common dataset utilities.ipynb 26
+try:
+    # a patch to ignore invalid utf-8 metadata
+    import torio.io._streaming_media_decoder
+    
+    def new_parse_si(i):
+        media_type = i.media_type
+        try:
+            metadata = i.metadata
+        except UnicodeDecodeError:
+            metadata = {}
+        if media_type == "audio":
+            return torio.io._streaming_media_decoder.SourceAudioStream(
+                media_type=i.media_type,
+                codec=i.codec_name,
+                codec_long_name=i.codec_long_name,
+                format=i.format,
+                bit_rate=i.bit_rate,
+                num_frames=i.num_frames,
+                bits_per_sample=i.bits_per_sample,
+                metadata=metadata,
+                sample_rate=i.sample_rate,
+                num_channels=i.num_channels,
+            )
+        if media_type == "video":
+            return torio.io._streaming_media_decoder.SourceVideoStream(
+                media_type=i.media_type,
+                codec=i.codec_name,
+                codec_long_name=i.codec_long_name,
+                format=i.format,
+                bit_rate=i.bit_rate,
+                num_frames=i.num_frames,
+                bits_per_sample=i.bits_per_sample,
+                metadata=metadata,
+                width=i.width,
+                height=i.height,
+                frame_rate=i.frame_rate,
+            )
+        return torio.io._streaming_media_decoder.SourceStream(
             media_type=i.media_type,
             codec=i.codec_name,
             codec_long_name=i.codec_long_name,
-            format=i.format,
-            bit_rate=i.bit_rate,
-            num_frames=i.num_frames,
-            bits_per_sample=i.bits_per_sample,
+            format=None,
+            bit_rate=None,
+            num_frames=None,
+            bits_per_sample=None,
             metadata=metadata,
-            sample_rate=i.sample_rate,
-            num_channels=i.num_channels,
         )
-    if media_type == "video":
-        return torio.io._streaming_media_decoder.SourceVideoStream(
-            media_type=i.media_type,
-            codec=i.codec_name,
-            codec_long_name=i.codec_long_name,
-            format=i.format,
-            bit_rate=i.bit_rate,
-            num_frames=i.num_frames,
-            bits_per_sample=i.bits_per_sample,
-            metadata=metadata,
-            width=i.width,
-            height=i.height,
-            frame_rate=i.frame_rate,
-        )
-    return torio.io._streaming_media_decoder.SourceStream(
-        media_type=i.media_type,
-        codec=i.codec_name,
-        codec_long_name=i.codec_long_name,
-        format=None,
-        bit_rate=None,
-        num_frames=None,
-        bits_per_sample=None,
-        metadata=metadata,
-    )
-torio.io._streaming_media_decoder._parse_si = new_parse_si
-
+    torio.io._streaming_media_decoder._parse_si = new_parse_si
+except ImportError:
+    # old torchaudio does not have torio, ignore
+    pass
+    
 def torch_audio_opus(key, data):
     """Decode audio using the torchaudio library.
 
