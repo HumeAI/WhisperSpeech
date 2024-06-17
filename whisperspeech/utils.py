@@ -30,6 +30,12 @@ huggingface_hub.snapshot_download = wrap_downloader(huggingface_hub.snapshot_dow
 huggingface_hub.hf_hub_download = wrap_downloader(huggingface_hub.hf_hub_download)
 
 # %% ../nbs/D. Common dataset utilities.ipynb 3
+# patch a backwards incompatible change in newer numpy
+# https://numpy.org/devdocs/release/1.20.0-notes.html#deprecations
+import numpy
+numpy.int = int
+
+# %% ../nbs/D. Common dataset utilities.ipynb 10
 def shard_glob(input):
     if isinstance(input, Path):
         input = str(input)
