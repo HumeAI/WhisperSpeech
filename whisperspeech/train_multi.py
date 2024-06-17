@@ -30,11 +30,19 @@ import lightning.pytorch as pl
 import math
 
 class TrainingTask(pl.LightningModule):
-    def __init__(self, model, model_hparams=None):
+    def __init__(self, model_hparams=None):
         super().__init__()
-        self.model = model
         self.model_hparams = model_hparams
-        
+
+    def configure_model(self):
+        # we initialize everything manually anyways
+        if args['load_from']:
+            self.model = task.load_model(str(args['load_from']))
+        else:
+            model_kwargs = dict(dataset=train_dss[0])
+            if tunables is not None: model_kwargs['tunables'] = tunables
+            self.model = parse_and_call('model', task.make_model, task_args, model_kwargs)
+
     def on_fit_start(self):
         if getattr(self.model, 'setup'):
             self.model.setup(self.device)
@@ -42,19 +50,19 @@ class TrainingTask(pl.LightningModule):
             import torch._dynamo
             torch._dynamo.config.optimize_ddp = False
             # FIXME: define a batch of dummy tensors in the model
-            testing.test_model(model, train_dss[0], bs=batch_size)
-            model.optimize_training()
-    
+            testing.test_model(self.model, train_dss[0], bs=batch_size)
+            self.model.optimize_training()
+
     def configure_optimizers(self):
         """ Initialize AdamW optimizer"""
         lr = self.model_hparams['lr0']
         weight_decay = self.model_hparams['weight_decay']
         
-        all_params = set(model.parameters())
+        all_params = set(self.model.parameters())
         customized_params = set()
         groups = []
         group_map = {}
-        for name,m in model.named_modules():
+        for name,m in self.model.named_modules():
             if hasattr(m, 'no_weight_decay') or hasattr(m, 'lr_scale'):
                 customized_params |= set(m.parameters())
                 m_wd = 0 if hasattr(m, 'no_weight_decay') else weight_decay
@@ -357,15 +365,6 @@ trainer = pl.Trainer(strategy=hyp_params['strategy'],
                   num_nodes=int(os.environ.get('SLURM_NNODES', 1)),
                   devices=int(os.environ.get('SLURM_NTASKS_PER_NODE', 1)),
                   callbacks=[ckpt_callback, lr_monitor_callback])
-        
-# we initialize everything manually anyways
-with trainer.init_module(empty_init=True):
-    if args['load_from']:
-        model = task.load_model(str(args['load_from']))
-    else:
-        model_kwargs = dict(dataset=train_dss[0])
-        if tunables is not None: model_kwargs['tunables'] = tunables
-        model = parse_and_call('model', task.make_model, task_args, model_kwargs)
 
 if type(wandb_logger.experiment.config) == wandb.sdk.wandb_config.Config:
     wandb_logger.experiment.config.update(hyp_params)
@@ -373,7 +372,7 @@ if type(wandb_logger.experiment.config) == wandb.sdk.wandb_config.Config:
 kwargs = {}
 if 'resume_from' in args:
     kwargs['ckpt_path'] = args['resume_from']
-trainer.fit(model=TrainingTask(model, model_hparams=hyp_params),
+trainer.fit(model=TrainingTask(model_hparams=hyp_params),
             train_dataloaders=train_loader,
             val_dataloaders=val_loaders,
             **kwargs)
@@ -382,4 +381,4 @@ if rank_zero_only.rank == 0:
     Path(task_name).mkdir(exist_ok=True, parents=True)
     fname = f'{task_name}/{name}.model'
     print('Saving:', fname)
-    model.save_model(fname)
+    trainer.model.model.save_model(fname)
