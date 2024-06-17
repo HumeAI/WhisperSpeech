@@ -82,7 +82,11 @@ class Pipeline:
         if self.encoder is None:
             device = self.device
             if device == 'mps': device = 'cpu' # operator 'aten::_fft_r2c' is not currently implemented for the MPS device
-            from speechbrain.pretrained import EncoderClassifier
+            try:
+                # 0.5.16
+                from speechbrain.pretrained import EncoderClassifier
+            except: # 1.0.0
+                from speechbrain.inference.classifiers import EncoderClassifier
             self.encoder = EncoderClassifier.from_hparams("speechbrain/spkrec-ecapa-voxceleb",
                                                           savedir=expanduser("~/.cache/speechbrain/"),
                                                           run_opts={"device": device})

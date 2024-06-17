@@ -17,7 +17,11 @@ from torch.utils.data.dataloader import DataLoader
 
 from . import vad, utils
 
-from speechbrain.pretrained import EncoderClassifier
+try:
+    # 0.5.16
+    from speechbrain.pretrained import EncoderClassifier
+except: # 1.0.0
+    from speechbrain.inference.classifiers import EncoderClassifier
 from .inference import get_compute_device
 
 # %% ../nbs/2A. Speaker Embeddings.ipynb 5
