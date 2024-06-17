@@ -370,6 +370,12 @@ if hasattr(task, "Tunables"):
     if type(wandb_logger.experiment.config) == wandb.sdk.wandb_config.Config:
         wandb_logger.experiment.config['tunables'] = dataclasses.asdict(tunables)
 
+decay_ckpt_callback = pl.callbacks.ModelCheckpoint(
+     dirpath=f'{task_name}',
+     filename=f'{task_name}-{name}'+"-predecay",
+     every_n_train_steps=int(hyp_params['iterations']*0.9)-1
+)
+        
 trainer = pl.Trainer(strategy=hyp_params['strategy'],
                   max_steps=hyp_params['iterations'],
                   accelerator="gpu",
@@ -383,7 +389,7 @@ trainer = pl.Trainer(strategy=hyp_params['strategy'],
                   logger=wandb_logger,
                   num_nodes=int(os.environ.get('SLURM_NNODES', 1)),
                   devices=int(os.environ.get('SLURM_NTASKS_PER_NODE', -1)),
-                  callbacks=[ckpt_callback, lr_monitor_callback])
+                  callbacks=[ckpt_callback, decay_ckpt_callback, lr_monitor_callback])
 
 if type(wandb_logger.experiment.config) == wandb.sdk.wandb_config.Config:
     wandb_logger.experiment.config.update(hyp_params)
