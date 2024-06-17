@@ -257,6 +257,8 @@ hyp_params['iterations'] = iterations
 hyp_params['strategy'] = args['strategy']
 if 'SLURM_NTASKS' in os.environ:
     hyp_params['world_size'] = os.environ['SLURM_NTASKS']
+elif 'WORLD_SIZE' in os.environ:
+    hyp_params['world_size'] = os.environ['WORLD_SIZE']
 else:
     hyp_params['world_size'] = 1
 
@@ -374,7 +376,7 @@ trainer = pl.Trainer(strategy=hyp_params['strategy'],
                   enable_checkpointing=True,
                   logger=wandb_logger,
                   num_nodes=int(os.environ.get('SLURM_NNODES', 1)),
-                  devices=int(os.environ.get('SLURM_NTASKS_PER_NODE', 1)),
+                  devices=int(os.environ.get('SLURM_NTASKS_PER_NODE', -1)),
                   callbacks=[ckpt_callback, lr_monitor_callback])
 
 if type(wandb_logger.experiment.config) == wandb.sdk.wandb_config.Config:
