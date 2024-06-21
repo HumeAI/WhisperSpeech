@@ -294,25 +294,22 @@ def vad_dataset(shards, ikey='vad.npy', kind='vad', pad_to_seconds=30):
         lambda x: split_to_chunks(x, ikey=ikey, pad_to_seconds=pad_to_seconds),
     )
 
-# %% ../nbs/D. Common dataset utilities.ipynb 19
+# %% ../nbs/D. Common dataset utilities.ipynb 29
 @contextmanager
-def AtomicTarWriter(name, throwaway=False):
-    pr = urlparse(name)
-    if pr.scheme == "":
-        Path(name).parent.mkdir(exist_ok=True, parents=True)
-        tmp = name+".tmp"
-        with wds.TarWriter(tmp, compress=name.endswith('gz')) as sink:
-            yield sink
-        if not throwaway:
-            os.rename(tmp, name)
-    else:
-        # webdataset writing is unfortunately not atomic with cloud buckets
-        with wds.TarWriter(name+".tmp") as sink:
-            yield sink
-        if not throwaway:
-            subprocess.run(['gsutil', 'mv', name+".tmp", name], check=True)
+def AtomicTarWriter(name, throwaway=False, **kwargs):
+    local = urlparse(name).scheme == ""
 
-# %% ../nbs/D. Common dataset utilities.ipynb 20
+    if local: Path(name).parent.mkdir(exist_ok=True, parents=True)
+
+    tmp = name+".tmp"
+    with wds.TarWriter(tmp, compress=name.endswith('gz'), **kwargs) as sink:
+        yield sink
+    
+    if not throwaway:
+        if local: os.rename(tmp, name)
+        else: subprocess.run(['gsutil', 'mv', name+".tmp", name], check=True)
+
+# %% ../nbs/D. Common dataset utilities.ipynb 30
 def readlines(fname):
     with wds.gopen(str(fname)) as file:
         lines = [line.decode('utf-8').rstrip() for line in file.read().split(b'\n')]
