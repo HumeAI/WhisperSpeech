@@ -8,6 +8,7 @@ import os
 import webdataset as wds
 from pathlib import Path
 import torch
+import torchaudio
 from fastprogress import progress_bar
 from fastcore.script import call_parse
 import numpy as np
@@ -16,8 +17,188 @@ from collections import Counter, defaultdict
 from whisperspeech import utils, vad_merge
 import sys
 import copy
+import pickle
 
 # %% ../nbs/3D. Split out validation.ipynb 2
+def torchaudio_flac(data):
+    """Dump data into a bytestring using torch.dumps.
+
+    This delays importing torch until needed.
+
+    :param data: data to be dumped
+    """
+    import io
+
+    stream = io.BytesIO()
+    torchaudio.save(stream, data[0], sample_rate=data[1], format='flac')
+    return stream.getvalue()
+
+encoders = {}
+encoders.update(wds.writer.default_handlers)
+encoders['flac'] = torchaudio_flac
+
+# %% ../nbs/3D. Split out validation.ipynb 3
+def make_tar_writer(name):
+    return utils.AtomicTarWriter(str(name), encoder=encoders)
+
+# %% ../nbs/3D. Split out validation.ipynb 4
+def collapse_vad(vad, mask):
+    # cut away unnecessary audio
+    t = 0
+    for i,dur in enumerate(vad[:,1] - vad[:,0]):
+        if mask[i]:
+            vad[i,0] = t
+            t = t + dur
+            vad[i,1] = t
+
+# %% ../nbs/3D. Split out validation.ipynb 6
+def split_mvad_dataset(
+    shard_dir:str,
+    splits:str,
+    mvad_kind:str=None,
+):
+    assert mvad_kind == 'raw' # we only need to do it for vq_stoks validation on raw samples
+    mode = 'mvad'
+
+    shards = utils.shard_glob(shard_dir+'/*.tar.gz')
+
+    splits = splits.split()
+
+    # unpacks sample id 'src_key_001' into 'src_key', '001'
+    def unpack_id(x):
+        return x.rsplit('_', 1)
+        
+    mvad_bufs = {k:[] for k in splits}
+    mvad_outputs = {k:make_tar_writer(Path(k).parent/'mvad'/(Path(k).name+".tar.gz")) for k in splits}
+
+    needles = {}
+    chunks = defaultdict(lambda: [])
+    for split in splits:
+        for k in utils.readlines(split):
+            file_id, chunk_id = unpack_id(k)
+            needles[file_id] = mvad_bufs[split]
+            chunks[file_id].append(int(chunk_id))
+
+    print(f"Generating splits: {' '.join(splits)}, looking for {len(needles)} {mode} samples...")
+    
+    ds = wds.WebDataset(shards).compose(
+        wds.decode(),
+        wds.select(lambda x: x['__key__'] in needles),
+        wds.map(lambda x: pickle.dumps(x))
+    )
+    
+    dl = wds.WebLoader(ds, num_workers=16, batch_size=None)
+
+    used_shards = {}
+    for s in progress_bar(dl, total=len(needles)):
+        s = pickle.loads(s)
+        used_shards[s['__url__']] = True
+        vad = s[mvad_kind+'.vad.npy']
+
+        mask = np.zeros(vad.shape[0], dtype=np.bool_)
+        for i in chunks[s['__key__']]: mask[i] = True
+        s['mask.npy'] = mask
+
+        collapse_vad(vad, mask)
+
+        needles[s['__key__']].append(copy.deepcopy(s))
+        del needles[s['__key__']]
+        pass
+    print()
+
+    for split,buf in mvad_bufs.items():
+        with mvad_outputs[split] as sink:
+            for s in sorted(buf, key=lambda x: x['__key__']):
+                for k,v in s.items():
+                    if isinstance(v, torch.Tensor): s[k] = v.numpy()
+                sink.write(s)
+            
+    if len(needles) > 0:
+        print(f"Missed {len(needles)} samples:")
+        for n in needles:
+            print(n)
+        sys.exit(1)
+        
+    return set(used_shards)
+
+# %% ../nbs/3D. Split out validation.ipynb 9
+def split_audio_dataset(
+    shard_dir:str,
+    splits:str,
+    mvad_kind:str=None,
+    shards=None
+):
+    assert mvad_kind == 'raw' # we only need to do it for vq_stoks validation on raw samples
+    mode = "audio"
+
+    if shards == None:
+        shards = split_mvad_dataset(str(Path(shard_dir).parent/'mvad'), splits, mvad_kind)
+    shards = [str(Path(x).parent.parent/'audio'/Path(x).with_suffix('').name) for x in shards]
+
+    splits = splits.split()
+
+    # unpacks sample id 'src_key_001' into 'src_key', '001'
+    def unpack_id(x):
+        return x.rsplit('_', 1)
+
+    audio_bufs = {k:[] for k in splits}
+    audio_outputs = {k:make_tar_writer(Path(k).parent/mode/(Path(k).name+".tar")) for k in splits}
+
+    needles = {}
+    chunks = defaultdict(lambda: [])
+    for split in splits:
+        for k in utils.readlines(split):
+            file_id, chunk_id = unpack_id(k)
+            needles[file_id] = audio_bufs[split]
+            chunks[file_id].append(int(chunk_id))
+
+    print(f"Generating splits: {' '.join(splits)}, looking for {len(needles)} {mode} samples...")
+
+    def cut_audio(s):
+        # manually decode only the filtered samples
+        for ikey in 'flac;mp3;sox;wav;m4a;ogg;wma;opus'.split(';'):
+            if ikey in s:
+                audio, sr = utils.torch_audio_opus(ikey, s[ikey])
+                break
+
+        # calculate required segments
+        vad = s[mvad_kind+'.vad.npy']
+        mask = np.zeros(vad.shape[0], dtype=np.bool_)
+        for i in chunks[s['__key__']]: mask[i] = True
+        
+        # cut unnecessary audio
+        new_audio = np.concatenate([audio[:,int(st*sr):int(et*sr)] for i,(st,et) in enumerate(vad) if mask[i]], axis=-1)
+        s['audio'] = (new_audio, sr)
+        return s
+
+    ds = wds.WebDataset(shards).compose(
+        utils.merge_in(utils.derived_dataset('mvad')),
+        wds.select(lambda x: x['__key__'] in needles),
+        wds.map(cut_audio),
+        wds.to_tuple('__key__', 'audio')
+    )
+
+    dl = wds.WebLoader(ds, num_workers=32, batch_size=None)
+
+    for key, audio in progress_bar(dl, total=len(needles)):
+        needles[key].append({'__key__': key, 'flac': audio})
+        del needles[key]
+    print()
+
+    for split,buf in audio_bufs.items():
+        with audio_outputs[split] as sink:
+            for s in sorted(buf, key=lambda x: x['__key__']):
+                for k,v in s.items():
+                    if isinstance(v, torch.Tensor): s[k] = v.numpy()
+                sink.write(s)
+
+    if len(needles) > 0:
+        print(f"Missed {len(needles)} samples:")
+        for n in needles:
+            print(n)
+        sys.exit(1)
+
+# %% ../nbs/3D. Split out validation.ipynb 28
 @call_parse
 def split_dataset(
     shard_dir:str,
@@ -27,66 +208,51 @@ def split_dataset(
     mode = Path(shard_dir).name
 
     if mode == "audio":
-        shards = utils.shard_glob(shard_dir+'/*.tar')
-    else:
-        shards = utils.shard_glob(shard_dir+'/*.tar.gz')
+        return split_audio_dataset(shard_dir, splits, mvad_kind)
+    
+    shards = utils.shard_glob(shard_dir+'/*.tar.gz')
 
     splits = splits.split()
 
     # unpacks sample id 'src_key_001' into 'src_key', '001'
     def unpack_id(x):
         return x.rsplit('_', 1)
-
-    def make_tar_writer(name):
-        name.parent.mkdir(parents=True, exist_ok=True)
-        return wds.TarWriter(str(name))
     
-    suffix = ".tar.gz" if mode != 'audio' else ".tar"
+    # fixes a sorting issue with chunk_ids > 999
+    # this breaks merging with mvad-based audio splits
+    def sorting_key(x):
+        file_id, chunk_id = x['__key__'].rsplit('_', 1)
+        return (file_id, int(chunk_id))
+    
+    suffix = ".tar.gz"
     
     bufs = {k:[] for k in splits}
     outputs = {k:make_tar_writer(Path(k).parent/mode/(Path(k).name+suffix)) for k in splits}
 
-    if mode == "audio" or mode == "mvad":
-        needles = {}
-        chunks = defaultdict(lambda: [])
-        for split in splits:
-            for k in utils.readlines(split):
-                file_id, chunk_id = unpack_id(k)
-                needles[file_id] = bufs[split]
-                chunks[file_id].append(int(chunk_id))
-    else:
-        needles = {k:bufs[split] for split in splits for k in utils.readlines(split)}
-        chunks = None
+    needles = {k:bufs[split] for split in splits for k in utils.readlines(split)}
+    chunks = None
 
     print(f"Generating splits: {' '.join(outputs.keys())}, looking for {len(needles)} {mode} samples...")
     
     ds = wds.WebDataset(shards).compose(
         wds.select(lambda x: x['__key__'] in needles),
     )
-    if mode == 'mvad': ds = ds.decode()
     
-    dl = wds.WebLoader(ds, num_workers=0 if len(shards) > 10 else 16, batch_size=None)
+    dl = wds.WebLoader(ds, num_workers=16 if len(shards) > 10 else 16, batch_size=None)
 
-    for s in progress_bar(dl, total='noinfer'):
-        if mode == "mvad":
-            mask = np.zeros(s[mvad_kind+'.vad.npy'].shape[0], dtype=np.bool_)
-            for i in chunks[s['__key__']]: mask[i] = True
-            new = {}
-            for k in ['__key__', mvad_kind+'.vad.npy', mvad_kind+'.spk_emb.npy', mvad_kind+'.subvads.pyd', 'gain_shift.npy']:
-                v = s[k]
-                if isinstance(v, torch.Tensor): v = v.numpy()
-                new[k] = v
-            new['mask.npy'] = mask
-            s = new
+    for s in progress_bar(dl, total=len(needles)):
         needles[s['__key__']].append(copy.deepcopy(s))
         del needles[s['__key__']]
         pass
     print()
 
     for split,buf in bufs.items():
-        for s in sorted(buf, key=lambda x: x['__key__']):
-            outputs[split].write(s)
+        with outputs[split] as sink:
+            for s in sorted(buf, key=sorting_key):
+                sink.write(s)
     
     if len(needles) > 0:
-        print(f"Missed {len(needles)} samples!")
+        print(f"Missed {len(needles)} samples:")
+        for n in needles:
+            print(repr(n))
         sys.exit(1)
