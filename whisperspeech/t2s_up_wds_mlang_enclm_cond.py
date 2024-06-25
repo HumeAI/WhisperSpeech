@@ -417,7 +417,7 @@ class TSARTransformer(nn.Module):
 
         return xenc, positions, conds['cps'].unsqueeze(1), conds['spk_emb'].unsqueeze(1)
     
-    def forward(self, in_ttoks, out_ttoks, conds, in_stoks, out_stoks=None, in_stoks_positions=None, loss=True, offset=None, xenc=None, xenc_positions=None, cps_emb=None):
+    def forward(self, in_ttoks, out_ttoks, conds, in_stoks, out_stoks=None, in_stoks_positions=None, loss=True, offset=None, xenc=None, xenc_positions=None, cps_emb=None, spk_emb=None):
         if xenc is None:
             xenc, xenc_positions, cps_emb, spk_emb = self.run_encoder(in_ttoks, conds)
 
@@ -512,8 +512,8 @@ class TSARTransformer(nn.Module):
     def device(self):
         return next(self.parameters()).device
 
-    def generate_one(self, toks, toks_positions, cps_emb, xenc, xenc_positions, T, top_k):
-        probs, _ = self(None, None, None, None, toks, in_stoks_positions=toks_positions, loss=None, xenc=xenc, xenc_positions=xenc_positions, cps_emb=cps_emb)
+    def generate_one(self, toks, toks_positions, cps_emb, spk_emb, xenc, xenc_positions, T, top_k):
+        probs, _ = self(None, None, None, toks, in_stoks_positions=toks_positions, loss=None, xenc=xenc, xenc_positions=xenc_positions, cps_emb=cps_emb, spk_emb=spk_emb)
         probs = probs[:,-1]
         probs[self.embeddings.embedding.codes:] = -torch.inf
         return inference.sample(probs, T, top_k)
@@ -531,33 +531,13 @@ class TSARTransformer(nn.Module):
         return ttoks, cpss, langs
     
     @torch.no_grad()
-    def generate(self, txt, cps=15, lang="en", stoks_prompt=None, N=None, bs=1, T=0.7, top_k=None, step=None, show_progress_bar=True):
+    def generate(self, txt, spk_emb, accent, cps=15, lang="en", stoks_prompt=None, N=None, bs=1, T=0.7, top_k=None, step=None, show_progress_bar=True):
         self.ensure_tokenizer()
         N = N or self.stoks_len
         dev = self.device
-        ttoks = []
-        langs = []
-        if isinstance(lang, list):
-            lang0 = lang[0]
-            assert isinstance(txt, list), "lang and txt have to be both lists or strings"
-            for txt, lang in zip(txt, lang):
-                tt = self.tokenizer.encode(txt)
-                ttoks += tt
-                langs += [languages.to_id(lang)] * len(tt)
-        elif isinstance(lang, torch.Tensor):
-            langs = lang
-            ttoks = self.tokenizer.encode(txt)
-        else:
-            lang0 = lang
-            ttoks = self.tokenizer.encode(txt)
-            langs = torch.tensor([languages.to_id(lang)], device=dev)
-        ttoks = torch.tensor(ttoks, device=dev)
+        ttoks = torch.tensor(self.tokenizer.encode(txt), device=dev)
         ttoks = F.pad(ttoks, (1, self.ttoks_len - len(ttoks) - 1), value=self.tokenizer.eot)
-        cpss = torch.tensor([cps], device=dev)
         T = torch.tensor(T, device=dev)
-        if not isinstance(langs, torch.Tensor):
-            langs = torch.tensor(langs, device=dev)
-            langs = F.pad(langs, (1, self.ttoks_len - len(langs) - 1), value=languages.to_id(lang0))
 
         toks = torch.zeros((bs,N), dtype=torch.long, device=dev)
         toks[:,0] = self.stoks_codes + self.tunables.padding_token_offset
@@ -571,15 +551,14 @@ class TSARTransformer(nn.Module):
         toks_positions = torch.arange(N, device=dev)
         with record_function("encode"):
             ttoks = ttoks.repeat(bs, 1)
-            langs, cpss = [x.repeat(bs) for x in (langs, cpss)]
-            xenc, xenc_positions, cps_emb = self.run_encoder(ttoks, langs, cpss)
+            xenc, xenc_positions, cps_emb, spk_emb = self.run_encoder(ttoks, [dict(lang=languages.to_id(lang), cps=cps, spk_emb=spk_emb, accent=accent)] * bs)
             toks_positions = torch.arange(N+1, device=dev)
         
         with record_function("prefill"):
-            toks[:,start+1] = self.generate_one(toks[:,:start+1].contiguous(), toks_positions[:start+1], cps_emb, xenc, xenc_positions, T, top_k)[:,0]
+            toks[:,start+1] = self.generate_one(toks[:,:start+1].contiguous(), toks_positions[:start+1], cps_emb, spk_emb, xenc, xenc_positions, T, top_k)[:,0]
         with inference.inference_context():
             for i in it:
-                toks[:,i+1] = self.generate_next(toks[:,i:i+1], toks_positions[i:i+1], cps_emb, xenc, xenc_positions, T, top_k)[:,0]
+                toks[:,i+1] = self.generate_next(toks[:,i:i+1], toks_positions[i:i+1], cps_emb, spk_emb, xenc, xenc_positions, T, top_k)[:,0]
                 if (toks[:,i+1] == self.stoks_codes+self.tunables.padding_token_offset).all(): return toks[:,1:i+1]
 
                 # for profiling, debugging or early exit
