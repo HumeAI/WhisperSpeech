@@ -97,7 +97,7 @@ class TrainingTask(pl.LightningModule):
         total_steps = self.model_hparams['iterations']
         self.model_hparams['pct_start'] = min(0.3, warmup_steps / total_steps)
 
-        print(f"{self.model_hparams['iterations']=} steps")
+        if rank_zero_only.rank == 0: print(f"{self.model_hparams['iterations']=} steps")
 
         if self.model_hparams['lr_schedule'] == 'cosine':
             lr_scheduler = torch.optim.lr_scheduler.OneCycleLR(
@@ -179,7 +179,7 @@ import shlex
 # watch out: we can only pass Python values as keyword arguments (not positional)
 # everything else has to be a string
 def parse_and_call(name, fun, args, kwargs={}, log_to_wandb=True):
-    print(f"Parsing arguments for {name}, {args}")
+    if rank_zero_only.rank == 0: print(f"Parsing arguments for {name}, {args}")
     p = anno_parser(fun, prog=name)
     args = p.parse_args(args).__dict__
     args.pop('xtra'); args.pop('pdb')
@@ -195,7 +195,7 @@ def simplify_folder_names(lst):
     parts = [x.split('/') for x in lst]
     prefix = os.path.commonprefix(parts)
     suffix = os.path.commonprefix([x[::-1] for x in parts])
-    print(prefix, suffix)
+    if rank_zero_only.rank == 0: print(f"Removing common prefix: '{prefix}' and suffix '{suffix}'")
     return ['_'.join(x[len(prefix):len(x)-len(suffix)]) for x in parts]
 
 # %% ../nbs/B2. Training (Lightning).ipynb 11
@@ -322,17 +322,16 @@ train_dss = [parse_and_call(f'train_ds_{i}', task.load_dataset,
                             parse_dataset_string(train_ds_config) + dataset_config)
              for i,train_ds_config in enumerate(args['training_data'])]
 train_dss_names = simplify_folder_names([parse_dataset_string(train_ds_config)[0] for train_ds_config in args['training_data']])
-print('train names:', train_dss_names)
 if not hyp_params['manual_dataset_weights']:
     counts = [x.total_samples for x in train_dss]
-    print(counts)
-    print(torch.tensor(counts).log2())
+    if rank_zero_only.rank == 0: print(counts)
+    if rank_zero_only.rank == 0: print(torch.tensor(counts).log2())
     train_weights = torch.tensor(counts).log2() - torch.tensor(counts).log2().min() + 1
     for tds, w in zip(train_dss, train_weights):
         tds.weight = w
-    print(torch.tensor(counts).log2() - torch.tensor(counts).log2().min() + 1)
 else:
     train_weights = torch.tensor([getattr(ds, 'weight', 1) for ds in train_dss])
+if rank_zero_only.rank == 0: print('Training sets:', ", ".join([f"{name} {w:.2f}" for name, w in zip(train_dss_names, train_weights / train_weights.sum())]))
 
 train_total_batches = hyp_params['iterations']
 if train_total_batches < hyp_params['validate_every_n_steps']:
@@ -349,7 +348,7 @@ train_loader = wds.WebLoader(
 # load all validation sets
 val_dss_names = [parse_dataset_string(val_ds_config)[0] for val_ds_config in args['validation_data']]
 val_dss_names = simplify_folder_names(val_dss_names)
-print('validation names:', val_dss_names)
+if rank_zero_only.rank == 0: print('validation sets:', val_dss_names)
 
 val_dss = [parse_and_call(f'val_ds_{i}', task.load_dataset,
                           parse_dataset_string(val_ds_config) + dataset_config, {'validation': True})
