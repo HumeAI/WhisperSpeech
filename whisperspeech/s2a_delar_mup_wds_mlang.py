@@ -77,6 +77,7 @@ def load_dataset(
 
     dataset_dir = Path(dataset_dir)
     shards = utils.shard_glob(dataset_dir/'encodec-3kbps/*.tar.gz')
+    if len(shards) == 0: raise Exception("No atoks shards found in:", dataset_dir/'encodec-3kbps')
     with open(dataset_dir/'atoks-samples.list') as f: samples = len(f.readlines())
     language = utils.readlines(dataset_dir/'language')[0]
 
