@@ -236,7 +236,7 @@ class RQBottleneckTransformer(nn.Module):
 
             self.positional_embedding = nn.Embedding(1500, width) # FIXME: should be self.stoks_len
 
-            self._out_blocks = nn.Sequential(*[
+            self.out_blocks = nn.Sequential(*[
                 ResidualAttentionBlock(width, n_head, qk_scale=qk_scale, ffn_mult=ffn_mult, rope=tunables.rope) for _ in range(depth)
             ])
             self.ln_post = LayerNorm(width)
@@ -285,8 +285,8 @@ class RQBottleneckTransformer(nn.Module):
         else:
             return x[:,::self.downsample]
         
-    def out_blocks(self, x):
-        for l in self._out_blocks: x = l(x, self.positions)
+    def _out_blocks(self, x):
+        for l in self.out_blocks: x = l(x, self.positions)
         return x
     
     def forward(self, samples, mask, input_toks, output_toks):
@@ -303,7 +303,7 @@ class RQBottleneckTransformer(nn.Module):
             project_out = getattr(self.rq, 'project_out', None) or self.rq.layers[0].project_out
             if self.tunables.mask_embs: x[~mask] = project_out(self.rq.layers[0]._codebook.embed[0,self.vq_codes])
             x = x + self.positional_embedding(self.positions.to(x.device))
-            x = self.ln_post(self.out_blocks(x))
+            x = self.ln_post(self._out_blocks(x))
         
         logits = self.whmodel[0].decoder(input_toks, embs if self.no_quantize else x)
         self.ce_loss = self.ce_lossf(logits.view(-1,logits.shape[-1]), output_toks.view(-1))
@@ -341,7 +341,12 @@ class RQBottleneckTransformer(nn.Module):
                 local_filename = ref
         if not local_filename:
             local_filename = hf_hub_download(repo_id=repo_id, filename=filename)
-        spec = torch.load(local_filename) 
+        spec = torch.load(local_filename)
+        if '_out_blocks.0.attn.query.weight' in spec['state_dict']:
+            for k,v in list(spec['state_dict'].items()):
+                if k.startswith('_out_blocks'):
+                    del spec['state_dict'][k]
+                    spec['state_dict'][k[1:]] = v
         vqmodel = cls(**spec['config'], tunables=Tunables(**Tunables.upgrade(spec.get('tunables', {}))))
         vqmodel.load_state_dict(spec['state_dict'])
         vqmodel.eval()
