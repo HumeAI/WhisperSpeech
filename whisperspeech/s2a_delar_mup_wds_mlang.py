@@ -518,6 +518,11 @@ class SADelARTransformer(nn.Module):
 # %% ../nbs/4B. Multi-language semantic to acoustic token modeling.ipynb 15
 def _make_model(size:str, quantizers:int=4, tunables:Tunables=Tunables(), **kwargs):
     kwargs = dict(quantizers=quantizers, tunables=tunables, **kwargs)
+    if size.startswith('custom:'):
+        kwargs.update(dict(depth=6, n_head=8))
+        kw = {kw:int(value) for arg in size.split(':', 1)[1].split(",") for kw,value in [arg.split('=', 1)]}
+        kwargs.update(kw)
+        return SADelARTransformer(**kwargs)
     if size == 'micro':
         return SADelARTransformer(depth=4, n_head=3, ffn_mult=2, **kwargs)
     if size == 'tiny-narrow':
@@ -526,6 +531,8 @@ def _make_model(size:str, quantizers:int=4, tunables:Tunables=Tunables(), **kwar
         return SADelARTransformer(depth=4, n_head=6, **kwargs)
     if size == 'base':
         return SADelARTransformer(depth=6, n_head=8, **kwargs)
+    if size == 'base-v2':
+        return SADelARTransformer(depth=4, n_head=16, ffn_mult=6, **kwargs)
     if size == 'base-deep':
         return SADelARTransformer(depth=9, n_head=8, **kwargs)
     if size == 'base-wide':
@@ -534,6 +541,8 @@ def _make_model(size:str, quantizers:int=4, tunables:Tunables=Tunables(), **kwar
         return SADelARTransformer(depth=9, n_head=12, **kwargs)
     if size == 'small':
         return SADelARTransformer(depth=12, n_head=12, **kwargs)
+    if size == 'small-v2':
+        return SADelARTransformer(depth=8, n_head=16, ffn_mult=6, **kwargs)
     if size == 'medium':
         return SADelARTransformer(depth=24, n_head=16, **kwargs)
 
