@@ -57,7 +57,6 @@ def split_mvad_dataset(
     splits:str,
     mvad_kind:str=None,
 ):
-    assert mvad_kind == 'raw' # we only need to do it for vq_stoks validation on raw samples
     mode = 'mvad'
 
     shards = utils.shard_glob(shard_dir+'/*.tar.gz')
@@ -128,7 +127,6 @@ def split_audio_dataset(
     mvad_kind:str=None,
     shards=None
 ):
-    assert mvad_kind == 'raw' # we only need to do it for vq_stoks validation on raw samples
     mode = "audio"
 
     if shards == None:
@@ -209,6 +207,8 @@ def split_dataset(
 
     if mode == "audio":
         return split_audio_dataset(shard_dir, splits, mvad_kind)
+    if mode == "mvad":
+        return split_mvad_dataset(shard_dir, splits, mvad_kind)
     
     shards = utils.shard_glob(shard_dir+'/*.tar.gz')
 
