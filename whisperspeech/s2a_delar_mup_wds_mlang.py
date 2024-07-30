@@ -70,6 +70,7 @@ def load_dataset(
         validation:bool=False,
         exclude_datasets:str="atoks-random-valid",
         randomize_speakers:bool=False,
+        initial_shuffle=20000, # set to 0 for deving to get faster startup
     ):
     import webdataset as wds
     from whisperspeech import utils, languages
@@ -103,16 +104,20 @@ def load_dataset(
         pad_samples(stoks_pad_token=vq_codes-1),
         wds.map(set_language),
         wds.to_tuple('in_stoks', 'in_atoks', 'spk_emb.npy', 'language'),
-        wds.shuffle(20000, initial=20000),
-        wds.batched(64),
     )
+    if not validation:
+        ds = ds.compose(
+            wds.shuffle(20000, initial=initial_shuffle),
+        )
     if randomize_speakers:
         rng = np.random.default_rng()
         ds = ds.compose(
             wds.map_tuple(None, None, lambda x: rng.permutation(x), None),
         )
     if validation:
-        ds = ds.slice(samples // 64)
+        ds = ds.compose(
+            wds.batched(512),
+        ).slice(samples // 64)
     ds.total_samples = samples
     ds.weight = weight
     

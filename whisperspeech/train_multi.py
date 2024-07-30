@@ -341,9 +341,9 @@ if train_total_batches < hyp_params['validate_every_n_steps']:
 # persistent_workers=True is critical here so we don't reset the sample shuffling buffers
 # with webdatasets sample shuffling is very bad initially, unless num_workers << num_shards
 train_loader = wds.WebLoader(
-    utils.join_datasets(train_dss),
+    utils.join_datasets(train_dss).shuffle(4096, initial=256).batched(512),
     num_workers=num_workers, drop_last=False, batch_size=None, shuffle=False, persistent_workers=num_workers > 0,
-).unbatched().shuffle(1024).batched(batch_size).with_length(train_total_batches)
+).unbatched().shuffle(8192, initial=2048).batched(batch_size).with_length(train_total_batches)
 
 # load all validation sets
 val_dss_names = [parse_dataset_string(val_ds_config)[0] for val_ds_config in args['validation_data']]
