@@ -248,7 +248,7 @@ class SADelARTransformer(nn.Module):
         width = n_head * head_width
         store_attr("depth,ctx_n,stoks_len,stoks_codes,stoks_width,spk_width,atoks_width,n_head,head_width,ffn_mult,quantizers,speaker_map")
         self.width = width
-        self.base_width = 3 * head_width
+        self.base_width = 3 * 64
         self.tunables = tunables
         
         if stoks_width is None: stoks_width = width
@@ -336,7 +336,7 @@ class SADelARTransformer(nn.Module):
     def run_encoder(self, Stoks, speakers):
         semb = self.embed_stoks(Stoks)
         with record_function("encoder"):
-            if self.positional_embeddings is not None: semb = semb + self.positional_embeddings
+            if self.positional_embeddings is not None: semb = semb + self.positional_embeddings[::3]
             positions = torch.arange(0, semb.shape[1], device=semb.device)
             xenc = self._encoder(semb, positions)
         if self.training and self.tunables.causal_encoder:
