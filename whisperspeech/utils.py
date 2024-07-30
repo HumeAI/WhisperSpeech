@@ -71,13 +71,15 @@ def shard_glob(input):
         raise ArgumentError("input should be either a list or a path with an optional glob specifier")
     return [str(x) for x in input]
 
-# %% ../nbs/D. Common dataset utilities.ipynb 7
-class join_datasets(torch.utils.data.IterableDataset):
+# %% ../nbs/D. Common dataset utilities.ipynb 14
+class join_datasets(wds.DataPipeline, wds.compat.FluidInterface):
     def __init__(self, datasets):
+        super().__init__()
         self.datasets = datasets
         self.iters = [iter(ds) for ds in self.datasets]
+        self.append(self.sample_from_datasets)
         
-    def __iter__(self):
+    def sample_from_datasets(self):
         probs = torch.tensor([getattr(ds, 'weight', 1) for ds in self.datasets], dtype=torch.float)
         while True:
             try:
@@ -88,7 +90,7 @@ class join_datasets(torch.utils.data.IterableDataset):
     def __len__(self):
         return sum([ds.total_samples for ds in self.datasets])
 
-# %% ../nbs/D. Common dataset utilities.ipynb 10
+# %% ../nbs/D. Common dataset utilities.ipynb 17
 def resampler(newsr = 24000, key = 'samples_24k'):
     _last_sr = None
     tform = None
