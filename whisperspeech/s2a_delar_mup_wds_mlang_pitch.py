@@ -27,6 +27,8 @@ from fastprogress import progress_bar, master_bar
 # %% ../nbs/4B. Multi-language semantic to acoustic token modeling pitch.ipynb 4
 from . import inference
 from .modules import *
+from .a2wav import Vocoder
+import penn
 
 # %% ../nbs/4B. Multi-language semantic to acoustic token modeling pitch.ipynb 8
 def rand(start, end):
@@ -159,6 +161,27 @@ class DelSumEmbedding(nn.Module):
             x = embs.to(xenc.dtype)
         return x
 
+# %% ../nbs/4B. Multi-language semantic to acoustic token modeling pitch.ipynb 14
+class BinnedEmbedding(nn.Module):
+    default = torch.nan
+    
+    def __init__(self, vmin=0, vmax=1, bins=32, width=512):
+        super().__init__()
+        store_attr('vmin,vmax,bins')
+        self.embed = nn.Embedding(bins+1, width)
+        
+    def forward(self, x, return_quantized=False):
+        # calculate the bin index
+        qx = ((x - self.vmin) / (self.vmax - self.vmin) * self.bins).to(torch.long)
+        qx.clamp_(0,self.bins-1)
+        qx[torch.isnan(x)] = self.bins # separate bin for NaNs which represent missing conditioning
+        q = qx.to(torch.long)
+        embs = self.embed(q)
+        if return_quantized:
+            return embs, q
+        else:
+            return embs
+
 # %% ../nbs/4B. Multi-language semantic to acoustic token modeling pitch.ipynb 15
 class DelSumHead(nn.Module):
     def __init__(self, quantizers=8, n_head=6, head_width=64):
@@ -195,7 +218,8 @@ class Tunables:
     q0_loss_mult: float = 1
     causal_encoder :bool = False
         
-    mlp_spk_emb :bool = False
+    pitch_quantizer :tuple = None
+    loudness_quantizer :tuple = None
     
     lr0 :float = 3e-3
     clip_gradient_norm :float = 2
@@ -296,13 +320,37 @@ class SADelARTransformer(nn.Module):
         self.head = DelSumHead(n_head=n_head, head_width=head_width, quantizers=quantizers)
         for l in self.decoder.layers:
             l.cross_attn.key_subsampling = 3
-        
+
+        self.helpers = {}
+        if self.tunables.pitch_quantizer:
+            self.pitch_embedding = BinnedEmbedding(*self.tunables.pitch_quantizer, width=width)
+        if self.tunables.loudness_quantizer:
+            self.dB_embedding = BinnedEmbedding(*self.tunables.loudness_quantizer,width=width)
+
+        # self.pitch_embedding = BinnedEmbedding(-5,5,3,width=width) # peter_lime
+        # ^ clip=0.5 – tiffany_seashell
+#         self.pitch_embedding = BinnedEmbedding(-15,15,9,width=width) # allison_gray
+#         self.pitch_embedding = BinnedEmbedding(-5,5,7,width=width) christina_deepskyblue
+#        self.pitch_embedding = BinnedEmbedding(-20,20,20,width=width) christopher_turquoise
+
+        # denise_violet:
+#         self.pitch_embedding = BinnedEmbedding(-5,5,7,width=width)
+#         self.dB_embedding = BinnedEmbedding(-11,-3.5,15,width=width)
+        # robert_slateblue:
+#         self.pitch_embedding = BinnedEmbedding(-5,5,7,width=width)
+#         self.dB_embedding = BinnedEmbedding(-11,-3,8,width=width)
+
         self.register_buffer('val_true', torch.zeros(self.quantizers))
         self.register_buffer('val_total', torch.zeros(self.quantizers))
         self.apply(self.init_transformer)
 
     def setup(self, device):
-        pass
+        self.ensure_helpers(device)
+
+    def ensure_helpers(self, device=None):
+        device = device or self.device
+        if 'vocoder' not in self.helpers:
+            self.helpers['vocoder'] = Vocoder(device=device)
         
     def load_frozen_semantic_embeddings(self, vqmodel):
         with torch.no_grad():
@@ -353,6 +401,37 @@ class SADelARTransformer(nn.Module):
             Sembs = self.emb_to_hidden(Sembs)
         return Sembs
 
+    @torch.no_grad()
+    def decode_atoks(self, Atoks):
+        atoks = Atoks.clone()
+        for j in range(self.quantizers):
+            atoks[:, j] = torch.roll(atoks[:, j], -j)
+        atoks[atoks >= 1024] = 0 # replace padding with "valid" tokens
+        return self.helpers['vocoder'].decode(atoks)
+
+    @torch.no_grad()
+    def extract_pitch(self, audio):
+        bs = audio.shape[0]
+        pitches = []
+        for i in range(bs):
+            fmin, fmax = 30., 1000.
+            pitch, periodicity = penn.from_audio(
+                audio[i].unsqueeze(0),
+                24000,
+                hopsize=20e-3,
+                fmin=fmin,
+                fmax=fmax,
+                batch_size=128,
+                gpu=audio.device.index)
+            pitch[periodicity < .05] = np.nan
+            pitches.append(pitch)
+        pitches = torch.stack(pitches)
+        pdiffs = torch.nn.functional.pad(pitches, (3, 3), value=np.nan).reshape(bs,-1,2).diff()
+
+        dB = F.avg_pool1d(audio.square(), kernel_size=8001, stride=960, padding=4000).log()
+
+        return pdiffs.squeeze(-1), dB
+
     def _encoder(self, semb, positions):
         x = semb
         for l in self.encoder: x = l(x, positions, causal=self.tunables.causal_encoder)
@@ -378,6 +457,15 @@ class SADelARTransformer(nn.Module):
         if xenc is None:
             Stoks, Atoks = [x.to(dtype=torch.long) for x in (Stoks, Atoks)]
             xenc, xenc_positions, enc_logits = self.run_encoder(Stoks, speakers)
+
+            if self.tunables.pitch_quantizer or self.tunables.loudness_quantizer:
+                ref_audio = self.decode_atoks(Atoks)
+                pdiffs, dB = self.extract_pitch(ref_audio)
+                if self.tunables.pitch_quantizer:
+                    xenc = xenc + self.pitch_embedding(pdiffs)
+                if self.tunables.loudness_quantizer:
+                    xenc = xenc + self.dB_embedding(dB)
+
         with record_function("decoder"):
             embs = self.embds(Atoks, xenc)
             if atoks_positions is None: atoks_positions = torch.arange(0, embs.shape[1], device=embs.device)
@@ -500,7 +588,7 @@ class SADelARTransformer(nn.Module):
         return self.generate_one(*args, **kwargs)
     
     @torch.no_grad()
-    def generate(self, stoks, speakers, langs=None, atoks_prompt=None, N=None, bs=1, T=0.7, top_k=None, show_progress_bar=True, step=None, subsample_enc=False):
+    def generate(self, stoks, speakers, ref_audio=None, langs=None, atoks_prompt=None, N=None, bs=1, T=0.7, top_k=None, show_progress_bar=True, step=None, subsample_enc=False):
         dev = self.device
         N = N or len(stoks) * 3
         stoks = F.pad(stoks.to(dev), (1, self.stoks_len - len(stoks) - 1), value=self.stoks_codes-1).unsqueeze(0)
@@ -519,6 +607,14 @@ class SADelARTransformer(nn.Module):
             stoks, speakers = [x.repeat(bs, 1) for x in (stoks, speakers)]
             xenc, xenc_positions, _ = self.run_encoder(stoks, speakers)
             toks_positions = torch.arange(N, device=dev)
+
+            if self.tunables.pitch_quantizer or self.tunables.loudness_quantizer:
+                pdiffs, dB = self.extract_pitch(ref_audio)
+                if self.tunables.pitch_quantizer:
+                    xenc = xenc + self.pitch_embedding(pdiffs)
+                if self.tunables.loudness_quantizer:
+                    xenc = xenc + self.dB_embedding(dB)
+
         with record_function("prefill"):
             initial = self.generate_one(toks[:,:,:start], toks_positions[:start], langs, xenc, xenc_positions, T, top_k)
             toks[:,:start,start:start+1] = initial[:,:start]
