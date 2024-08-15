@@ -191,6 +191,8 @@ class Tunables:
     rope :bool = True
     q0_loss_mult: float = 1
     causal_encoder :bool = False
+
+    mlp_spk_emb :bool = False
     
     lr0 :float = 3e-3
     clip_gradient_norm :float = 2
@@ -268,7 +270,14 @@ class SADelARTransformer(nn.Module):
                 self.hidden_to_emb = nn.Linear(width, stoks_width)
         
         if self.spk_factor:
-            self.spk_to_hidden = nn.Linear(spk_width, width)
+            if self.tunables.mlp_spk_emb:
+                self.spk_to_hidden = nn.Sequential(
+                    nn.Linear(spk_width, ffn_mult * width),
+                    nn.GELU(),
+                    nn.Linear(ffn_mult * width, width),
+                )
+            else:
+                self.spk_to_hidden = nn.Linear(spk_width, width)
 
         qk_scale = self.tunables.query_mult * 8 / math.sqrt(head_width)
         
