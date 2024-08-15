@@ -54,9 +54,13 @@ def pad_samples(atoks_len = 2250, stoks_len = 750, stoks_pad_token = 4096):
             atoks = torch.tensor(s['atoks.npy'])
             s['in_stoks'] = F.pad(stoks, (1, stoks_len - stoks.shape[-1]-1), value=stoks_pad_token)
             q,n = atoks.shape
-            padatoks = [F.pad(   atoks[i], (i + 1, 0                    ), value=1025) for i in range(q)]
+            padatoks = [F.pad(   atoks[i], (i + 5, 0                    ), value=1025) for i in range(q)]
             padatoks = [F.pad(padatoks[i], (0,     atoks_len - n - i - 1), value=1024) for i in range(q)]
             s['in_atoks'] = torch.stack(padatoks)
+            s['in_atoks'][:,:0] = 1026
+            s['in_atoks'][:,:1] = 1027
+            s['in_atoks'][:,:2] = 1028
+            s['in_atoks'][:,:3] = 1029
             yield s
     return _pad
 
@@ -137,7 +141,7 @@ class DelSumEmbedding(nn.Module):
         emb = None
         embs = []
         for _ in range(quantizers):
-            emb = FlexEmbeddings(codes, width, special_codes=2, frozen_width=atoks_width,
+            emb = FlexEmbeddings(codes, width, special_codes=6, frozen_width=atoks_width,
                                  special_embedding=emb and emb.special)
             embs.append(emb)
         self.embeddings = nn.ModuleList(embs)
@@ -193,6 +197,7 @@ class Tunables:
     causal_encoder :bool = False
 
     mlp_spk_emb :bool = False
+    spk_emb_as_tokens :int = None
     
     lr0 :float = 3e-3
     clip_gradient_norm :float = 2
@@ -238,7 +243,7 @@ class Tunables:
         return args
             
 class SADelARTransformer(nn.Module):
-    def __init__(self, depth=3, ctx_n=2250,
+    def __init__(self, depth=3, ctx_n=2254,
                  stoks_len=750, stoks_codes=4097, stoks_width=None,
                  spk_width=None,
                  atoks_width=None,
@@ -271,10 +276,11 @@ class SADelARTransformer(nn.Module):
         
         if self.spk_factor:
             if self.tunables.mlp_spk_emb:
-                self.spk_to_hidden = nn.Sequential(
+                self.spk_to_hidden = nn.ModuleList([nn.Sequential(
                     nn.Linear(spk_width, ffn_mult * width),
                     nn.GELU(),
-                    nn.Linear(ffn_mult * width, width),
+                    nn.Linear(ffn_mult * width, width))
+                    for i in range(self.tunables.spk_emb_as_tokens)]
                 )
             else:
                 self.spk_to_hidden = nn.Linear(spk_width, width)
@@ -353,18 +359,20 @@ class SADelARTransformer(nn.Module):
             enc_logits = enc_logits * self.tunables.output_mult / (self.width / self.base_width)
         else:
             enc_logits = None
-
         spk_embs = F.normalize(speakers, dim=-1) # use extracted embeddings
-        if self.spk_factor: spk_embs = self.spk_to_hidden(spk_embs)
-        return xenc + spk_embs.unsqueeze(1), positions, enc_logits
+        return xenc, spk_embs, positions, enc_logits
 
     def forward(self, Stoks, Atoks, speakers, langs=None, out_stoks=None, out_atoks=None, noloss=False, xenc=None, xenc_positions=None, atoks_positions=None):
         if xenc is None:
             Stoks, Atoks = [x.to(dtype=torch.long) for x in (Stoks, Atoks)]
-            xenc, xenc_positions, enc_logits = self.run_encoder(Stoks, speakers)
+            xenc, spk_emb, xenc_positions, enc_logits = self.run_encoder(Stoks, speakers)
+            if self.tunables.spk_emb_as_tokens is None:
+                xenc = xenc + spk_emb.unsqueeze(1)
         with record_function("decoder"):
             embs = self.embds(Atoks, xenc)
             if atoks_positions is None: atoks_positions = torch.arange(0, embs.shape[1], device=embs.device)
+            for i in range(self.tunables.spk_emb_as_tokens):
+                embs[:,i] += self.spk_to_hidden[i](spk_emb)
             x = self.decoder(embs, atoks_positions, xenc, xenc_positions)
             logits = self.head(x, embeddings=self.embds.embeddings)
             logits *= self.tunables.output_mult / (self.width / self.base_width)
