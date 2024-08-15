@@ -114,15 +114,15 @@ def load_dataset(
         ds = ds.compose(
             wds.shuffle(20000, initial=initial_shuffle),
         )
+    if validation:
+        ds = ds.compose(
+            wds.batched(samples),
+        ).slice(1)
     if randomize_speakers:
         rng = np.random.default_rng()
         ds = ds.compose(
             wds.map_tuple(None, None, lambda x: rng.permutation(x), None),
         )
-    if validation:
-        ds = ds.compose(
-            wds.batched(512),
-        ).slice(samples // 64)
     ds.total_samples = samples
     ds.weight = weight
     
