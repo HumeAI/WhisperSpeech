@@ -362,7 +362,7 @@ class SADelARTransformer(nn.Module):
         spk_embs = F.normalize(speakers, dim=-1) # use extracted embeddings
         return xenc, spk_embs, positions, enc_logits
 
-    def forward(self, Stoks, Atoks, speakers, langs=None, out_stoks=None, out_atoks=None, noloss=False, xenc=None, xenc_positions=None, atoks_positions=None):
+    def forward(self, Stoks, Atoks, speakers, langs=None, out_stoks=None, out_atoks=None, noloss=False, xenc=None, xenc_positions=None, atoks_positions=None, spk_emb=None):
         if xenc is None:
             Stoks, Atoks = [x.to(dtype=torch.long) for x in (Stoks, Atoks)]
             xenc, spk_emb, xenc_positions, enc_logits = self.run_encoder(Stoks, speakers)
@@ -371,8 +371,9 @@ class SADelARTransformer(nn.Module):
         with record_function("decoder"):
             embs = self.embds(Atoks, xenc)
             if atoks_positions is None: atoks_positions = torch.arange(0, embs.shape[1], device=embs.device)
-            for i in range(self.tunables.spk_emb_as_tokens):
-                embs[:,i] += self.spk_to_hidden[i](spk_emb)
+            if spk_emb is not None:
+                for i in range(self.tunables.spk_emb_as_tokens):
+                    embs[:,i] += self.spk_to_hidden[i](spk_emb)
             x = self.decoder(embs, atoks_positions, xenc, xenc_positions)
             logits = self.head(x, embeddings=self.embds.embeddings)
             logits *= self.tunables.output_mult / (self.width / self.base_width)
@@ -483,8 +484,8 @@ class SADelARTransformer(nn.Module):
     def device(self):
         return next(self.parameters()).device
 
-    def generate_one(self, toks, positions, langs, xenc, xenc_positions, T, top_k):
-        probs = self(None, toks, None, langs, noloss=True, xenc=xenc, xenc_positions=xenc_positions, atoks_positions=positions)
+    def generate_one(self, toks, positions, langs, xenc, xenc_positions, T, top_k, spk_emb=None):
+        probs = self(None, toks, None, langs, noloss=True, xenc=xenc, xenc_positions=xenc_positions, atoks_positions=positions, spk_emb=spk_emb)
         probs = probs[:,:,-1]
         return inference.sample(probs, T, top_k)
 
@@ -498,6 +499,11 @@ class SADelARTransformer(nn.Module):
         stoks = F.pad(stoks.to(dev), (1, self.stoks_len - len(stoks) - 1), value=self.stoks_codes-1).unsqueeze(0)
         speakers = speakers.to(device=dev, dtype=self.dtype)
         toks = torch.full((bs,self.quantizers,self.ctx_n), self.codes+1, dtype=torch.long, device=dev)
+        toks[:,:,:0] = 1026
+        toks[:,:,:1] = 1027
+        toks[:,:,:2] = 1028
+        toks[:,:,:3] = 1029
+
         T = torch.tensor(T, device=dev)
 
         start = 0 # number of valid tokens or the index of first empty spot
@@ -505,15 +511,17 @@ class SADelARTransformer(nn.Module):
             start = atoks_prompt.shape[-1]
             for i in range(self.quantizers):
                 toks[:,i,1+i:start+i+1] = atoks_prompt[:,i]
-        start += 1 # we always start with at least an SOT
+        start += 5 # we always start with at least an SOT
 
         with record_function("encode"):
             stoks, speakers = [x.repeat(bs, 1) for x in (stoks, speakers)]
-            xenc, xenc_positions, _ = self.run_encoder(stoks, speakers)
+            xenc, spk_emb, xenc_positions, _ = self.run_encoder(stoks, speakers)
+            if self.tunables.spk_emb_as_tokens is None:
+                xenc = xenc + spk_emb.unsqueeze(1)
             toks_positions = torch.arange(N, device=dev)
         with record_function("prefill"):
-            initial = self.generate_one(toks[:,:,:start], toks_positions[:start], langs, xenc, xenc_positions, T, top_k)
-            toks[:,:start,start:start+1] = initial[:,:start]
+            initial = self.generate_one(toks[:,:,:start], toks_positions[:start], langs, xenc, xenc_positions, T, top_k, spk_emb=spk_emb)
+            toks[:,:start-4,start:start+1] = initial[:,:start-4]
             start += 1
             
         with inference.inference_context():
@@ -522,12 +530,12 @@ class SADelARTransformer(nn.Module):
 
             for i in it:
                 with record_function("generate_one"):
-                    toks[:,:i,i:i+1] = self.generate_next(toks[:,:,i-1:i], toks_positions[i-1:i], langs, xenc, xenc_positions, T, top_k)[:,:i]
+                    toks[:,:i-4,i:i+1] = self.generate_next(toks[:,:,i-1:i], toks_positions[i-1:i], langs, xenc, xenc_positions, T, top_k)[:,:i-4]
 
                 # for profiling, debugging or early exit
                 if step is not None: step()
         # shift tokens
-        toks = toks[:,:,1:N]
+        toks = toks[:,:,5:N]
         for j in range(self.quantizers):
             toks[:, j] = torch.roll(toks[:, j], -j)
         return toks[:,:,:N-4]
