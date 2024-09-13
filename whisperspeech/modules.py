@@ -53,14 +53,15 @@ def sinusoids(length, channels, max_timescale=10000):
 
 # %% ../nbs/A. Neural modules.ipynb 5
 class MultiHeadAttention(nn.Module):
-    def __init__(self, n_state: int, n_head: int, qk_scale: float = 1, rope: bool = False, cross=False):
+    def __init__(self, n_state: int, n_head: int, qk_scale: float = 1, rope: bool = False, cross=False, kv_n_head=None):
         super().__init__()
         self.n_state = n_state
         self.n_head = n_head
+        self.kv_n_head = kv_n_head or n_head
         self.sqrt_qk_scale = math.sqrt(qk_scale)
         self.query = QueryHead(n_state, n_state)
-        self.key = nn.Linear(n_state, n_state, bias=False)
-        self.value = nn.Linear(n_state, n_state)
+        self.key = nn.Linear(n_state, n_state // n_head * self.kv_n_head, bias=False)
+        self.value = nn.Linear(n_state, n_state // n_head * self.kv_n_head)
         self.out = nn.Linear(n_state, n_state)
         self.cross = cross
         self.query_subsampling = 1
@@ -77,7 +78,7 @@ class MultiHeadAttention(nn.Module):
         self.kv = None
 
     def setup_kv_cache(self, max_batch_size, max_seq_len, dtype=torch.float32):
-        cache_shape = (max_batch_size, self.n_head, max_seq_len, self.n_state//self.n_head)
+        cache_shape = (max_batch_size, self.kv_n_head, max_seq_len, self.n_state//self.n_head)
         self.k_cache = torch.zeros(cache_shape, dtype=dtype, device=self.key.weight.device)
         self.v_cache = torch.zeros(cache_shape, dtype=dtype, device=self.value.weight.device)
 
@@ -94,7 +95,7 @@ class MultiHeadAttention(nn.Module):
         if self.qkv or self.kv: raise AttributeError("already converted")
         
         self.odim = self.key.weight.shape[1]
-        if self.cross:
+        if self.cross or self.kv_n_head != self.n_head:
             self.q = self.merge_linears([self.query], [self.sqrt_qk_scale])
             self.kv = self.merge_linears([self.key, self.value],
                                          [self.sqrt_qk_scale, 1])
@@ -102,8 +103,8 @@ class MultiHeadAttention(nn.Module):
             self.qkv = self.merge_linears([self.query, self.key, self.value],
                                           [self.sqrt_qk_scale, self.sqrt_qk_scale, 1])
         
-    def split_heads(self, x, x_positions, rope=False, subsampling=1):
-        x = x.view(*x.shape[:2], self.n_head, -1)
+    def split_heads(self, x, x_positions, n_head, rope=False, subsampling=1):
+        x = x.view(*x.shape[:2], n_head, -1)
         if rope:
             x = rope_rotate(x, x_positions * subsampling, *self.rotary(x))
         return x.permute(0, 2, 1, 3)
@@ -128,13 +129,13 @@ class MultiHeadAttention(nn.Module):
             q,k,v = None,None,None
         
         if q is None: q = self.query(qx) * self.sqrt_qk_scale
-        q = self.split_heads(q, q_positions, rope = self.rotary, subsampling = self.query_subsampling)
+        q = self.split_heads(q, q_positions, self.n_head, rope = self.rotary, subsampling = self.query_subsampling)
 
         if kvx is not self.cached_kvx:
             if k is None: k = self.key(kvx) * self.sqrt_qk_scale
-            k = self.split_heads(k, kv_positions, rope = self.rotary, subsampling = self.key_subsampling)
+            k = self.split_heads(k, kv_positions, self.kv_n_head, rope = self.rotary, subsampling = self.key_subsampling)
             if v is None: v = self.value(kvx)
-            v = self.split_heads(v, kv_positions)
+            v = self.split_heads(v, kv_positions, self.kv_n_head)
             if self.k_cache is not None:
                 self.k_cache[:k.shape[0],:,kv_positions] = k
                 self.v_cache[:v.shape[0],:,kv_positions] = v
@@ -144,7 +145,10 @@ class MultiHeadAttention(nn.Module):
 
         if mask is not None:
             mask = mask[q_positions,:k.shape[-2]]
-            
+
+        if self.kv_n_head != 1 and self.n_head != self.kv_n_head:
+            k, v = k.repeat(1, self.n_head//self.kv_n_head, 1, 1), v.repeat(1, self.n_head//self.kv_n_head, 1, 1)
+
         wv = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0, is_causal=causal)
         
         return self.out(wv.permute(0, 2, 1, 3).flatten(start_dim=2))
@@ -190,13 +194,13 @@ def rope_rotate(x, positions, cos, sin):
 # %% ../nbs/A. Neural modules.ipynb 7
 class ResidualAttentionBlock(nn.Module):
     def __init__(self, n_state: int, n_head: int, cross_attention: bool = False, rope: bool = False,
-                 qk_scale: float = 1, ffn_mult: int = 4):
+                 qk_scale: float = 1, ffn_mult: int = 4, kv_n_head=None):
         super().__init__()
-        self.attn = MultiHeadAttention(n_state, n_head, qk_scale=qk_scale, rope=rope)
+        self.attn = MultiHeadAttention(n_state, n_head, qk_scale=qk_scale, rope=rope, kv_n_head=kv_n_head)
         self.attn_ln = LayerNorm(n_state)
 
         self.cross_attn = (
-            MultiHeadAttention(n_state, n_head, qk_scale=qk_scale, rope=rope, cross=True) if cross_attention else None
+            MultiHeadAttention(n_state, n_head, qk_scale=qk_scale, rope=rope, cross=True, kv_n_head=kv_n_head) if cross_attention else None
         )
         self.cross_attn_ln = LayerNorm(n_state) if cross_attention else None
 
@@ -230,13 +234,13 @@ class ResidualAttentionBlock(nn.Module):
 
 # %% ../nbs/A. Neural modules.ipynb 8
 class BaseDecoder(nn.Module):
-    def __init__(self, depth=6, n_head=6, width=384, qk_scale=1, ffn_mult=4, length=2250, rope=False):
+    def __init__(self, depth=6, n_head=6, kv_n_head=None, width=384, qk_scale=1, ffn_mult=4, length=2250, rope=False):
         super().__init__()
         self.length = length
         self.width = width
         self.layers = nn.ModuleList([
             ResidualAttentionBlock(
-                self.width, n_head, qk_scale=qk_scale, ffn_mult=ffn_mult, cross_attention=True, rope=rope
+                self.width, n_head, kv_n_head=kv_n_head, qk_scale=qk_scale, ffn_mult=ffn_mult, cross_attention=True, rope=rope
             ) for _ in range(math.floor(depth))
         ])
 
