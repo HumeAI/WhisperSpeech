@@ -84,7 +84,7 @@ class MultiHeadAttention(nn.Module):
 
     def merge_linears(self, layers, mults):
         bias = [x.bias for x in layers if x.bias is not None][0]
-        din, dout = layers[0].weight.shape
+        dout, din = layers[0].weight.shape
         new = nn.Linear(din, len(layers) * dout).to(layers[0].weight.device)
         with torch.no_grad():
             new.weight[:] = torch.cat([x.weight * m for x,m in zip(layers, mults)])
@@ -94,7 +94,7 @@ class MultiHeadAttention(nn.Module):
     def convert_for_eval(self):
         if self.qkv or self.kv: raise AttributeError("already converted")
         
-        self.odim = self.key.weight.shape[1]
+        self.odim = self.key.weight.shape[0]
         if self.cross or self.kv_n_head != self.n_head:
             self.q = self.merge_linears([self.query], [self.sqrt_qk_scale])
             self.kv = self.merge_linears([self.key, self.value],
