@@ -395,7 +395,7 @@ class RQBottleneckTransformer(nn.Module):
         x = project_out(x).unsqueeze(0)
         positions = torch.arange(0, x.shape[-2], dtype=torch.long, device=x.device)
         x = x + self.positional_embedding(positions)
-        return self.ln_post(self.out_blocks(x))
+        return self.ln_post(self._out_blocks(x))
 
     def encode_audio(self, audio):
         if isinstance(audio, str):
