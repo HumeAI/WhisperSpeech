@@ -191,6 +191,8 @@ class Tunables:
     rope :bool = True
     q0_loss_mult: float = 1
     causal_encoder :bool = False
+        
+    kv_n_head :int = None
     
     lr0 :float = 3e-3
     clip_gradient_norm :float = 2
@@ -275,7 +277,7 @@ class SADelARTransformer(nn.Module):
         encoder_depth = int(depth * 2 * tunables.encoder_depth_ratio)
         decoder_depth = depth * 2 - encoder_depth
         self.encoder = nn.Sequential(*[
-            ResidualAttentionBlock(width, n_head, qk_scale=qk_scale, ffn_mult=ffn_mult, rope=tunables.rope) for _ in range(encoder_depth)
+            ResidualAttentionBlock(width, n_head, kv_n_head=tunables.kv_n_head, qk_scale=qk_scale, ffn_mult=ffn_mult, rope=tunables.rope) for _ in range(encoder_depth)
         ])
         self.ln_post = LayerNorm(width)
 
@@ -285,7 +287,7 @@ class SADelARTransformer(nn.Module):
             quantizers=quantizers,
         )
         self.decoder = BaseDecoder(qk_scale=qk_scale, length=ctx_n,
-                                     n_head=n_head, width=n_head * head_width, 
+                                     n_head=n_head, kv_n_head=tunables.kv_n_head, width=n_head * head_width, 
                                      ffn_mult=ffn_mult, depth=decoder_depth,
                                      rope=tunables.rope)
         self.head = DelSumHead(n_head=n_head, head_width=head_width, quantizers=quantizers)
@@ -443,9 +445,11 @@ class SADelARTransformer(nn.Module):
                 m.to(dtype)
             # take care of buffers ([kv]_cache, masks) that are not in the leaf layers
             for bn,b in m.named_buffers(recurse=False):
-                setattr(m,bn,b.to(dtype))
+                dt = dtype
+                setattr(m,bn,b.to(dt))
 
-    def optimize(self, max_batch_size=1, dtype=torch.float16, torch_compile=True):
+    def optimize(self, max_batch_size=1, max_seq_length=None, dtype=torch.float16, torch_compile=True):
+        if max_seq_length is None: max_seq_length = self.ctx_n
         for emb in self.embds.embeddings:
             emb.convert_for_eval()
         for l in self.encoder:
@@ -453,7 +457,7 @@ class SADelARTransformer(nn.Module):
         for l in self.decoder.layers:
             l.attn.convert_for_eval()
             l.cross_attn.convert_for_eval()
-            l.setup_kv_cache(max_batch_size, self.ctx_n, self.stoks_len)
+            l.setup_kv_cache(max_batch_size, max_seq_length, self.stoks_len)
         self.switch_dtypes(dtype)
         if torch_compile:
             self._encoder = torch.compile(self._encoder, mode="reduce-overhead", fullgraph=True)
