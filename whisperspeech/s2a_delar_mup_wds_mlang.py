@@ -456,6 +456,8 @@ class SADelARTransformer(nn.Module):
             l.setup_kv_cache(max_batch_size, self.ctx_n, self.stoks_len)
         self.switch_dtypes(dtype)
         if torch_compile:
+            self._encoder = torch.compile(self._encoder, mode="reduce-overhead", fullgraph=True)
+            self.prefill = torch.compile(self.prefill, mode="reduce-overhead", fullgraph=True)
             self.generate_next = torch.compile(self.generate_next, mode="reduce-overhead", fullgraph=True)
             
     def optimize_training(self):
@@ -470,6 +472,9 @@ class SADelARTransformer(nn.Module):
         probs = self(None, toks, None, langs, noloss=True, xenc=xenc, xenc_positions=xenc_positions, atoks_positions=positions)
         probs = probs[:,:,-1]
         return inference.sample(probs, T, top_k)
+
+    def prefill(self, *args, **kwargs):
+        return self.generate_one(*args, **kwargs)
 
     def generate_next(self, *args, **kwargs):
         return self.generate_one(*args, **kwargs)
@@ -495,7 +500,7 @@ class SADelARTransformer(nn.Module):
             xenc, xenc_positions, _ = self.run_encoder(stoks, speakers)
             toks_positions = torch.arange(N, device=dev)
         with record_function("prefill"):
-            initial = self.generate_one(toks[:,:,:start], toks_positions[:start], langs, xenc, xenc_positions, T, top_k)
+            initial = self.prefill(toks[:,:,:start], toks_positions[:start], langs, xenc, xenc_positions, T, top_k)
             toks[:,:start,start:start+1] = initial[:,:start]
             start += 1
             
